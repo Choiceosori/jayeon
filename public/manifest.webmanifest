@@ -1,0 +1,10 @@
+{
+  "name": "모두의 디자인 실험실",
+  "short_name": "디자인 실험실",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#fbf8f1",
+  "theme_color": "#1d2b53",
+  "lang": "ko",
+  "icons": [{ "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
