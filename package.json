@@ -1,9 +1,9 @@
 {
-  "name": "universal-design-lab",
+  "name": "nature-invention-lab",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "모두의 디자인 실험실 — 감성을 담은 유니버설 디자인 수업용 웹앱",
+  "description": "자연 모방 발명 연구소 — 자연에서 발견하는 발명 아이디어 수업용 웹앱",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

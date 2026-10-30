@@ -1,7 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './app/App';
-import './styles/app.css';
+import App from './App';
+import './styles/theme.css';
+import './styles/print.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -9,9 +10,7 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 );
 
-// 인터넷이 없어도 다시 열 수 있도록 서비스 워커 등록 (배포 환경에서만)
-if ('serviceWorker' in navigator && import.meta.env.PROD) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => undefined);
-  });
+// 한 번 연 뒤에는 인터넷 없이도 열 수 있도록(배포 빌드에서만)
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
 }

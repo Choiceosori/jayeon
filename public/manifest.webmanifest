@@ -1,10 +1,10 @@
 {
-  "name": "모두의 디자인 실험실",
-  "short_name": "디자인 실험실",
+  "name": "자연 모방 발명 연구소",
+  "short_name": "자연 탐험 수첩",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#fbf8f1",
-  "theme_color": "#1d2b53",
+  "background_color": "#F7F0DF",
+  "theme_color": "#355B45",
   "lang": "ko",
   "icons": [{ "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
 }

@@ -1,0 +1,135 @@
+/* A4 세로 인쇄: 메뉴·버튼을 숨기고 선과 글씨 위주로 출력 */
+@page {
+  size: A4 portrait;
+  margin: 14mm 14mm 16mm;
+}
+
+@media print {
+  body {
+    background: #fff;
+    color: #000;
+    font-size: 11pt;
+    line-height: 1.55;
+  }
+  .screen-only,
+  .skip,
+  .toast,
+  dialog {
+    display: none !important;
+  }
+  .print-root {
+    display: block !important;
+  }
+  .print-header {
+    border-bottom: 2px solid #000;
+    margin-bottom: 8mm;
+  }
+  .print-header h1 {
+    font-size: 18pt;
+    margin: 0;
+  }
+  .print-header p {
+    margin: 2px 0 4px;
+    font-size: 10pt;
+  }
+  .print-sec {
+    break-before: page;
+  }
+  .print-sec:first-of-type {
+    break-before: auto;
+  }
+  .print-sec > h2 {
+    font-size: 14pt;
+    border-bottom: 1px solid #000;
+    padding-bottom: 2px;
+    margin: 0 0 4mm;
+  }
+  .avoid-break,
+  .rec-block,
+  .print-card,
+  figure,
+  img,
+  tr {
+    break-inside: avoid;
+  }
+  .rec-title {
+    color: #000;
+    font-size: 12pt;
+    break-after: avoid;
+  }
+  .rec-dl {
+    display: grid;
+    grid-template-columns: 34mm minmax(0, 1fr);
+    gap: 1mm 4mm;
+  }
+  .rec-dl dd {
+    border-bottom: 0.5pt solid #999;
+    min-height: 6mm;
+  }
+  .rec-table th,
+  .rec-table td {
+    border: 0.6pt solid #000;
+  }
+  .rec-table thead th {
+    background: none;
+  }
+  .empty-text {
+    color: #555;
+  }
+  .rec-photo,
+  .attached-photo {
+    max-height: 60mm;
+    border: 0.6pt solid #000;
+    box-shadow: none;
+    transform: none;
+  }
+  .stroke-img {
+    max-height: 120mm;
+    width: auto;
+    max-width: 100%;
+    border: 0.6pt solid #000;
+  }
+  .print-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4mm;
+  }
+  .print-card {
+    border: 0.8pt dashed #000;
+    padding: 3mm;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 1mm;
+    min-height: 58mm;
+    font-size: 9.5pt;
+  }
+  .pc-q {
+    font-style: italic;
+  }
+  .page-break-before {
+    break-before: page;
+  }
+
+  /* 골라서 인쇄하기 */
+  html:not([data-print='cards']) .print-sec[data-sec='cards'] {
+    display: none;
+  }
+  html[data-print='obs'] .print-sec:not([data-sec='obs']),
+  html[data-print='case'] .print-sec:not([data-sec='case']),
+  html[data-print='sketch'] .print-sec:not([data-sec='sketch']),
+  html[data-print='cards'] .print-sec:not([data-sec='cards']) {
+    display: none;
+  }
+  html[data-print='cards'] .print-header {
+    display: none;
+  }
+  html[data-print] .print-sec {
+    break-before: auto;
+  }
+  html[data-print='sketch'] .print-sec + .print-sec,
+  html[data-print='all'] .print-sec + .print-sec {
+    break-before: page;
+  }
+}

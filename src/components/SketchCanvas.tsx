@@ -1,238 +1,279 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
+import { getBlob, putBlob } from '../storage/storage';
 
-const CW = 900;
-const CH = 560;
-const MAX_UNDO = 25;
+/** 선 하나: 좌표와 굵기는 도화지 너비 기준 0~1 비율이라 화면 크기·회전이 바뀌어도 그대로 다시 그려진다. */
+export type Stroke = { c: string; w: number; eraser?: boolean; p: number[] };
 
-type Tool = 'pen' | 'eraser' | 'rect' | 'circle' | 'text';
+export const ASPECT = 3 / 4; // 높이 / 너비
+const PAPER = '#FFFFFF';
 
-interface Props {
-  value: string | null;
-  onChange: (dataUrl: string | null) => void;
+export const PEN_COLORS = [
+  { v: '#29342D', name: '검정' },
+  { v: '#355B45', name: '숲 초록' },
+  { v: '#7FA36E', name: '연두' },
+  { v: '#2F6E9E', name: '파랑' },
+  { v: '#C47743', name: '주황' },
+  { v: '#B83B3B', name: '빨강' },
+  { v: '#806B57', name: '갈색' },
+];
+export const PEN_WIDTHS = [
+  { v: 0.004, name: '가늘게' },
+  { v: 0.009, name: '보통' },
+  { v: 0.018, name: '굵게' },
+];
+
+export function renderStrokes(ctx: CanvasRenderingContext2D, strokes: Stroke[], w: number, h: number) {
+  ctx.fillStyle = PAPER;
+  ctx.fillRect(0, 0, w, h);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const s of strokes) {
+    ctx.strokeStyle = s.eraser ? PAPER : s.c;
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.lineWidth = Math.max(1, s.w * w * (s.eraser ? 2.2 : 1));
+    const p = s.p;
+    if (p.length === 2) {
+      ctx.beginPath();
+      ctx.arc(p[0] * w, p[1] * w, ctx.lineWidth / 2, 0, Math.PI * 2);
+      ctx.fill();
+      continue;
+    }
+    ctx.beginPath();
+    ctx.moveTo(p[0] * w, p[1] * w);
+    for (let i = 2; i < p.length; i += 2) ctx.lineTo(p[i] * w, p[i + 1] * w);
+    ctx.stroke();
+  }
 }
 
-const widths = [
-  { label: '가늘게', value: 3 },
-  { label: '보통', value: 6 },
-  { label: '굵게', value: 12 },
-];
-const colors = [
-  { label: '검정', value: '#1b1b1b' },
-  { label: '파랑', value: '#1d5fbf' },
-  { label: '빨강', value: '#c2362b' },
-  { label: '초록', value: '#1e8e4f' },
-];
+export function strokesToDataUrl(strokes: Stroke[], width = 1200) {
+  const c = document.createElement('canvas');
+  c.width = width;
+  c.height = Math.round(width * ASPECT);
+  const ctx = c.getContext('2d');
+  if (!ctx) return '';
+  renderStrokes(ctx, strokes, c.width, c.height);
+  return c.toDataURL('image/png');
+}
 
-/** 마우스·손가락·펜으로 그리는 설계도 그림판 */
-export default function SketchCanvas({ value, onChange }: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const undo = useRef<ImageData[]>([]);
-  const drawing = useRef<{ id: number; x: number; y: number; snap: ImageData | null; startX: number; startY: number } | null>(null);
-  const loadedValue = useRef<string | null | undefined>(undefined);
-  const [tool, setTool] = useState<Tool>('pen');
-  const [width, setWidth] = useState(6);
-  const [color, setColor] = useState(colors[0].value);
-  const [labelText, setLabelText] = useState('');
-  const [undoCount, setUndoCount] = useState(0);
-  const [msg, setMsg] = useState('');
+/** 인쇄·모아보기용: 저장된 선 데이터를 그림으로 보여 준다. */
+export function StrokeImage({ blobKey, alt }: { blobKey: string; alt: string }) {
+  const [url, setUrl] = useState('');
+  useEffect(() => {
+    let alive = true;
+    getBlob<Stroke[]>(blobKey).then((s) => {
+      if (alive && Array.isArray(s) && s.length) setUrl(strokesToDataUrl(s, 900));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [blobKey]);
+  if (!url) return <span className="empty-text">(그림을 불러오지 못했어요)</span>;
+  return <img src={url} alt={alt} className="stroke-img" />;
+}
 
-  const ctx = () => canvasRef.current?.getContext('2d') ?? null;
+export function SketchCanvas({ storeKey, title, onHasDrawing }: { storeKey: string; title: string; onHasDrawing: (has: boolean) => void }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const strokes = useRef<Stroke[]>([]);
+  const redo = useRef<Stroke[]>([]);
+  const cur = useRef<Stroke | null>(null);
+  const [, force] = useState(0);
+  const [color, setColor] = useState(PEN_COLORS[0].v);
+  const [width, setWidth] = useState(PEN_WIDTHS[1].v);
+  const [eraser, setEraser] = useState(false);
+  const [askClear, setAskClear] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [saveState, setSaveState] = useState('');
 
-  const clearWhite = useCallback(() => {
-    const c = ctx();
-    if (!c) return;
-    c.fillStyle = '#ffffff';
-    c.fillRect(0, 0, CW, CH);
+  const redraw = useCallback(() => {
+    const c = canvas.current;
+    const ctx = c?.getContext('2d');
+    if (!c || !ctx) return;
+    const all = cur.current ? [...strokes.current, cur.current] : strokes.current;
+    renderStrokes(ctx, all, c.width, c.height);
   }, []);
 
-  // 저장된 그림을 불러온다 (내가 방금 저장한 값이면 다시 그리지 않는다)
+  // 도화지 크기를 컨테이너에 맞춘다(회전·창 크기 변경 후에도 비율 유지).
   useEffect(() => {
-    if (loadedValue.current === value) return;
-    loadedValue.current = value;
-    clearWhite();
-    if (!value) return;
-    const img = new Image();
-    img.onload = () => ctx()?.drawImage(img, 0, 0, CW, CH);
-    img.onerror = () => setMsg('저장된 설계도를 불러오지 못했어요.');
-    img.src = value;
-  }, [value, clearWhite]);
-
-  const pushUndo = () => {
-    const c = ctx();
+    const c = canvas.current;
     if (!c) return;
-    undo.current.push(c.getImageData(0, 0, CW, CH));
-    if (undo.current.length > MAX_UNDO) undo.current.shift();
-    setUndoCount(undo.current.length);
+    const fit = () => {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const w = c.clientWidth;
+      if (!w) return;
+      c.width = Math.round(w * dpr);
+      c.height = Math.round(w * ASPECT * dpr);
+      redraw();
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(c);
+    return () => ro.disconnect();
+  }, [redraw]);
+
+  useEffect(() => {
+    let alive = true;
+    setLoaded(false);
+    strokes.current = [];
+    redo.current = [];
+    getBlob<Stroke[]>(storeKey).then((s) => {
+      if (!alive) return;
+      strokes.current = Array.isArray(s) ? s : [];
+      setLoaded(true);
+      redraw();
+      force((x) => x + 1);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [storeKey, redraw]);
+
+  const persist = async () => {
+    setSaveState('그림 저장 중...');
+    const ok = await putBlob(storeKey, strokes.current);
+    onHasDrawing(strokes.current.some((s) => !s.eraser));
+    setSaveState(ok ? '그림을 이 기기에 저장했어요' : '이 브라우저에서는 그림을 오래 저장할 수 없어요(창을 닫기 전에 PNG로 저장하세요)');
+    force((x) => x + 1);
   };
 
-  const commit = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    try {
-      const url = canvas.toDataURL('image/png');
-      loadedValue.current = url;
-      onChange(url);
-    } catch {
-      setMsg('설계도를 저장하지 못했어요. 활동 파일로 내보내 주세요.');
-    }
+  const point = (e: PointerEvent) => {
+    const c = canvas.current!;
+    const r = c.getBoundingClientRect();
+    return [(e.clientX - r.left) / r.width, ((e.clientY - r.top) / r.width)];
   };
 
-  const pos = (e: RPointerEvent<HTMLCanvasElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    return { x: ((e.clientX - r.left) / r.width) * CW, y: ((e.clientY - r.top) / r.height) * CH };
-  };
-
-  const style = (c: CanvasRenderingContext2D) => {
-    c.lineCap = 'round';
-    c.lineJoin = 'round';
-    c.lineWidth = tool === 'eraser' ? width * 3 : width;
-    c.strokeStyle = tool === 'eraser' ? '#ffffff' : color;
-    c.fillStyle = color;
-  };
-
-  const onDown = (e: RPointerEvent<HTMLCanvasElement>) => {
-    if (drawing.current) return;
-    const c = ctx();
-    if (!c) return;
-    const p = pos(e);
-    if (tool === 'text') {
-      const t = labelText.trim();
-      if (!t) {
-        setMsg('먼저 아래 칸에 붙일 이름(예: 손잡이)을 적고 그림을 눌러 주세요.');
-        return;
-      }
-      pushUndo();
-      c.font = `bold ${Math.max(18, width * 4)}px 'Pretendard','Apple SD Gothic Neo','Noto Sans KR','Malgun Gothic',sans-serif`;
-      c.fillStyle = color;
-      c.textBaseline = 'middle';
-      c.fillText(t, p.x, p.y);
-      setMsg(`"${t}" 이름표를 붙였어요.`);
-      commit();
-      return;
-    }
+  const down = (e: PointerEvent<HTMLCanvasElement>) => {
+    if (!loaded) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    pushUndo();
-    drawing.current = { id: e.pointerId, x: p.x, y: p.y, startX: p.x, startY: p.y, snap: tool === 'rect' || tool === 'circle' ? c.getImageData(0, 0, CW, CH) : null };
-    style(c);
-    if (tool === 'pen' || tool === 'eraser') {
-      c.beginPath();
-      c.arc(p.x, p.y, c.lineWidth / 2, 0, Math.PI * 2);
-      c.fillStyle = c.strokeStyle as string;
-      c.fill();
-    }
+    cur.current = { c: color, w: width, eraser: eraser || undefined, p: point(e) };
+    redraw();
+  };
+  const move = (e: PointerEvent<HTMLCanvasElement>) => {
+    if (!cur.current) return;
+    const events = typeof e.nativeEvent.getCoalescedEvents === 'function' ? e.nativeEvent.getCoalescedEvents() : [];
+    if (events.length > 1) {
+      const r = canvas.current!.getBoundingClientRect();
+      for (const ev of events) cur.current.p.push((ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.width);
+    } else cur.current.p.push(...point(e));
+    redraw();
+  };
+  const up = () => {
+    if (!cur.current) return;
+    cur.current.p = cur.current.p.map((v) => Math.round(v * 10000) / 10000);
+    strokes.current = [...strokes.current, cur.current];
+    cur.current = null;
+    redo.current = [];
+    redraw();
+    persist();
   };
 
-  const onMove = (e: RPointerEvent<HTMLCanvasElement>) => {
-    const d = drawing.current;
-    const c = ctx();
-    if (!d || !c || d.id !== e.pointerId) return;
-    const p = pos(e);
-    style(c);
-    if (tool === 'pen' || tool === 'eraser') {
-      c.beginPath();
-      c.moveTo(d.x, d.y);
-      c.lineTo(p.x, p.y);
-      c.stroke();
-      d.x = p.x;
-      d.y = p.y;
-    } else if (d.snap) {
-      c.putImageData(d.snap, 0, 0);
-      c.beginPath();
-      if (tool === 'rect') c.rect(d.startX, d.startY, p.x - d.startX, p.y - d.startY);
-      else c.ellipse((d.startX + p.x) / 2, (d.startY + p.y) / 2, Math.abs(p.x - d.startX) / 2, Math.abs(p.y - d.startY) / 2, 0, 0, Math.PI * 2);
-      c.stroke();
-    }
+  const undo = () => {
+    const s = strokes.current[strokes.current.length - 1];
+    if (!s) return;
+    strokes.current = strokes.current.slice(0, -1);
+    redo.current = [...redo.current, s];
+    redraw();
+    persist();
   };
-
-  const onUp = (e: RPointerEvent<HTMLCanvasElement>) => {
-    const d = drawing.current;
-    if (!d || d.id !== e.pointerId) return;
-    drawing.current = null;
-    setMsg('');
-    commit();
+  const redoOne = () => {
+    const s = redo.current[redo.current.length - 1];
+    if (!s) return;
+    redo.current = redo.current.slice(0, -1);
+    strokes.current = [...strokes.current, s];
+    redraw();
+    persist();
   };
-
-  const doUndo = () => {
-    const c = ctx();
-    const last = undo.current.pop();
-    if (!c || !last) return;
-    c.putImageData(last, 0, 0);
-    setUndoCount(undo.current.length);
-    commit();
+  const clear = () => {
+    // 모두 지우기도 되돌릴 수 있게 지운 선을 다시 실행 목록에 넣는다.
+    redo.current = [...redo.current, ...[...strokes.current].reverse()];
+    strokes.current = [];
+    setAskClear(false);
+    redraw();
+    persist();
   };
-
-  const clearAll = () => {
-    if (!window.confirm('설계도를 모두 지울까요? (되돌리기로 다시 살릴 수 있어요)')) return;
-    pushUndo();
-    clearWhite();
-    loadedValue.current = null;
-    onChange(null);
+  const savePng = () => {
+    const url = strokesToDataUrl(strokes.current, 1600);
+    if (!url) return;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${title || '상상스케치'}.png`.replace(/[\\/:*?"<>|]/g, '');
+    a.click();
   };
-
-  const tools: { id: Tool; label: string }[] = [
-    { id: 'pen', label: '✏️ 펜' },
-    { id: 'eraser', label: '🧽 지우개' },
-    { id: 'rect', label: '▭ 사각형' },
-    { id: 'circle', label: '◯ 원' },
-    { id: 'text', label: '🏷️ 이름표' },
-  ];
 
   return (
-    <div className="sketch">
-      <div className="sketch-toolbar" role="toolbar" aria-label="설계도 그리기 도구">
-        <div className="tool-set" role="radiogroup" aria-label="도구">
-          {tools.map((t) => (
-            <button key={t.id} type="button" role="radio" aria-checked={tool === t.id} className={`tool${tool === t.id ? ' on' : ''}`} onClick={() => setTool(t.id)}>
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <div className="tool-set" role="radiogroup" aria-label="선 굵기">
-          {widths.map((w) => (
-            <button key={w.value} type="button" role="radio" aria-checked={width === w.value} className={`tool${width === w.value ? ' on' : ''}`} onClick={() => setWidth(w.value)}>
-              <span className="line-sample" style={{ height: Math.max(2, w.value / 2) }} aria-hidden="true" />
-              {w.label}
-            </button>
-          ))}
-        </div>
-        <div className="tool-set" role="radiogroup" aria-label="색">
-          {colors.map((c) => (
-            <button key={c.value} type="button" role="radio" aria-checked={color === c.value} className={`tool${color === c.value ? ' on' : ''}`} onClick={() => setColor(c.value)}>
-              <span className="swatch" style={{ background: c.value }} aria-hidden="true" />
-              {c.label}
-            </button>
-          ))}
-        </div>
-        <div className="tool-set">
-          <button type="button" className="tool" onClick={doUndo} disabled={undoCount === 0}>
-            ↶ 되돌리기
-          </button>
-          <button type="button" className="tool" onClick={clearAll}>
-            🗑️ 전체 지우기
-          </button>
-        </div>
+    <div className="sketch-area">
+      <div className="sketch-paper">
+        <canvas
+          ref={canvas}
+          className={`sketch-canvas ${eraser ? 'is-eraser' : ''}`}
+          role="img"
+          aria-label={`${title} 손그림 도화지. 펜, 손가락, 마우스로 그릴 수 있어요. 그리기가 어려우면 아래 '그림 없이 글로 설명하기'를 이용하세요.`}
+          onPointerDown={down}
+          onPointerMove={move}
+          onPointerUp={up}
+          onPointerCancel={up}
+          onPointerLeave={(e) => e.buttons === 0 && up()}
+        />
+        {!loaded && <p className="sketch-loading">도화지를 펼치는 중...</p>}
       </div>
-      {tool === 'text' && (
-        <div className="field inline">
-          <label htmlFor="sketch-label">붙일 이름(부품 이름)</label>
-          <input id="sketch-label" type="text" maxLength={20} value={labelText} placeholder="예: 큰 손잡이" onChange={(e) => setLabelText(e.target.value)} />
-          <span className="hint">적은 뒤 그림에서 붙일 곳을 눌러요.</span>
+      <div className="sketch-tools" role="toolbar" aria-label="그리기 도구">
+        <div className="tool-group" role="group" aria-label="펜 색">
+          {PEN_COLORS.map((c) => (
+            <button
+              key={c.v}
+              type="button"
+              className="swatch"
+              style={{ ['--sw' as string]: c.v }}
+              aria-pressed={!eraser && color === c.v}
+              aria-label={`${c.name} 색연필`}
+              title={c.name}
+              onClick={() => {
+                setColor(c.v);
+                setEraser(false);
+              }}
+            />
+          ))}
         </div>
-      )}
-      <canvas
-        ref={canvasRef}
-        width={CW}
-        height={CH}
-        className="sketch-canvas"
-        aria-label="발명품 설계도 그림판. 그림을 그리기 어렵다면 아래 글 설명 칸을 사용하세요."
-        onPointerDown={onDown}
-        onPointerMove={onMove}
-        onPointerUp={onUp}
-        onPointerCancel={onUp}
-      />
-      <p className="hint" aria-live="polite">
-        {msg || '그린 그림은 자동으로 저장돼요.'}
-      </p>
+        <div className="tool-group" role="group" aria-label="선 굵기">
+          {PEN_WIDTHS.map((w) => (
+            <button key={w.v} type="button" className="width-btn" aria-pressed={width === w.v} onClick={() => setWidth(w.v)}>
+              <span className="width-dot" style={{ height: `${Math.max(2, w.v * 400)}px` }} aria-hidden="true" />
+              {w.name}
+            </button>
+          ))}
+        </div>
+        <div className="tool-group" role="group" aria-label="편집">
+          <button type="button" aria-pressed={eraser} onClick={() => setEraser((x) => !x)}>
+            🧽 지우개
+          </button>
+          <button type="button" onClick={undo} disabled={!strokes.current.length}>
+            ↶ 실행 취소
+          </button>
+          <button type="button" onClick={redoOne} disabled={!redo.current.length}>
+            ↷ 다시 실행
+          </button>
+          <button type="button" onClick={() => setAskClear(true)} disabled={!strokes.current.length}>
+            모두 지우기
+          </button>
+          <button type="button" onClick={savePng} disabled={!strokes.current.length}>
+            PNG로 저장
+          </button>
+        </div>
+        {askClear && (
+          <div className="confirm" role="alertdialog" aria-label="모두 지우기 확인">
+            <p>그림을 모두 지울까요? (지운 뒤에도 ‘다시 실행’으로 되살릴 수 있어요)</p>
+            <div className="btn-row">
+              <button type="button" className="btn-danger" onClick={clear}>
+                모두 지우기
+              </button>
+              <button type="button" className="btn-quiet" onClick={() => setAskClear(false)}>
+                취소
+              </button>
+            </div>
+          </div>
+        )}
+        <p className="field-hint" aria-live="polite">{saveState}</p>
+      </div>
     </div>
   );
 }

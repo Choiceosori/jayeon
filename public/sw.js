@@ -1,5 +1,5 @@
 // 간단한 오프라인 캐시: 한 번 연 뒤에는 인터넷 없이도 다시 열 수 있다.
-const CACHE = 'ud12-v1';
+const CACHE = 'nature13-v1';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './index.html'])).then(() => self.skipWaiting()));
